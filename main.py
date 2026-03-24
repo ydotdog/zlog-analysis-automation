@@ -12,6 +12,7 @@ import sys
 import subprocess
 import logging
 import argparse
+import json
 import tempfile
 import time
 from datetime import datetime, timedelta
@@ -28,13 +29,34 @@ config.LOG_DIR.mkdir(exist_ok=True)
 
 def run_claude_cli(prompt: str, system_prompt: str = None,
                    allowed_tools: str = None, max_budget: float = None,
-                   timeout: int = 9000, caller: str = "") -> str:
+                   timeout: int = 9000, caller: str = "",
+                   max_retries: int = 1) -> str:
     """
     调用 Claude CLI (-p 模式)，返回输出文本。
-    prompt 通过临时文件 stdin 传递，输出重定向到临时文件（避免 capture_output 缓冲问题）。
-    即使 CLI exit!=0，只要有输出内容就返回（绕过 signature_delta 解析 bug）。
+    失败时自动重试（指数退避），最多 max_retries 次。
     """
     tag = f"[claude-cli:{caller}]" if caller else "[claude-cli]"
+
+    for attempt in range(1, max_retries + 2):  # attempt 1 = 首次调用
+        result = _run_claude_cli_once(
+            prompt, system_prompt, allowed_tools, max_budget, timeout, tag
+        )
+        if result:
+            return result
+
+        if attempt <= max_retries:
+            backoff = 30 * (2 ** (attempt - 1))  # 30s, 60s, 120s...
+            logger.warning(f"{tag} 第{attempt}次重试，等待 {backoff}s...")
+            time.sleep(backoff)
+        else:
+            logger.error(f"{tag} 已用尽 {max_retries} 次重试机会")
+
+    return ""
+
+
+def _run_claude_cli_once(prompt: str, system_prompt: str, allowed_tools: str,
+                         max_budget: float, timeout: int, tag: str) -> str:
+    """单次 Claude CLI 调用。返回输出文本，失败返回空字符串。"""
     cmd = [config.CLAUDE_CMD, "-p", "--model", config.CLAUDE_MODEL]
 
     if system_prompt:
@@ -164,6 +186,7 @@ def search_news(tickers: list, ny_date: datetime) -> str:
         allowed_tools="WebSearch WebFetch",
         max_budget=2.0,
         caller="search_news",
+        max_retries=2,
     )
 
     if not result:
@@ -312,15 +335,36 @@ def run_daily(target_bj_date: datetime = None):
         logger.warning("如需重新生成，请删除该文件后重试。跳过。")
         return review_path
 
-    # 2. 数据采集
+    # 2. 数据采集（有 checkpoint 时复用）
     logger.info("--- 步骤 1/4: 数据采集 ---")
+    bj_str = config.format_bj_date_str(bj_date)
+    checkpoint_path = config.LOG_DIR / f"scrape_{bj_str}.json"
     t_scrape = time.monotonic()
-    try:
-        data = run_scraper(bj_date, ny_date)
-    except Exception as e:
-        logger.error(f"数据采集失败: {e}")
-        raise
-    t_scrape = time.monotonic() - t_scrape
+
+    if checkpoint_path.exists():
+        try:
+            data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            # 验证 checkpoint 包含必要字段且非空
+            required = ["zlog_text", "ms_text", "sector_details", "topact_text"]
+            if all(data.get(f) for f in required):
+                logger.info(f"复用已有采集数据: {checkpoint_path}")
+                t_scrape = 0
+            else:
+                missing = [f for f in required if not data.get(f)]
+                logger.warning(f"Checkpoint 数据不完整 (缺: {missing})，重新采集")
+                data = run_scraper(bj_date, ny_date)
+                t_scrape = time.monotonic() - t_scrape
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"Checkpoint 文件损坏 ({e})，重新采集")
+            data = run_scraper(bj_date, ny_date)
+            t_scrape = time.monotonic() - t_scrape
+    else:
+        try:
+            data = run_scraper(bj_date, ny_date)
+        except Exception as e:
+            logger.error(f"数据采集失败: {e}")
+            raise
+        t_scrape = time.monotonic() - t_scrape
 
     # 数据质量摘要
     data_fields = {
