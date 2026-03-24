@@ -37,6 +37,11 @@ DASHBOARD_URL_TPL = (
 CLAUDE_MODEL = "claude-opus-4-6"
 CLAUDE_CMD = "claude"
 
+# === MiniMax 配置（可选，通过 --provider minimax 启用）===
+MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "")
+MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
+MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7-highspeed")
+
 # === 美股休市日 (2026) ===
 # 格式：纽约时间日期
 US_HOLIDAYS_2026 = {
