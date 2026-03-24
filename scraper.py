@@ -62,7 +62,11 @@ def fetch_zlog_page(page: Page, bj_date: datetime) -> dict:
     soup = BeautifulSoup(page.content(), "html.parser")
     output_div = soup.find("div", class_="output")
     zlog_text = output_div.get_text().strip() if output_div else ""
-    logger.info(f"zlog 默认视图: {len(zlog_text)} 字符")
+    if not zlog_text:
+        page.screenshot(path=str(config.LOG_DIR / "zlog_empty.png"))
+        logger.error("zlog 默认视图为空，已截图 zlog_empty.png")
+    else:
+        logger.info(f"zlog 默认视图: {len(zlog_text)} 字符")
 
     # 点击 MS 按钮获取 MS daily 表
     ms_text = ""
@@ -159,6 +163,13 @@ def fetch_sector_page(page: Page, bj_date: datetime) -> dict:
         f"Sector 概览: {len(sector_items)} 板块, "
         f"详情: {len(sector_details_parts)} 板块个股"
     )
+    if len(sector_items) == 0:
+        page.screenshot(path=str(config.LOG_DIR / "sector_empty.png"))
+        logger.error("未找到任何板块，已截图 sector_empty.png")
+    elif len(sector_details_parts) < len(sector_items) * 0.5:
+        logger.warning(
+            f"板块详情提取不完整: 只有 {len(sector_details_parts)}/{len(sector_items)} 个板块有个股数据"
+        )
     return {
         "sector_summary": sector_summary,
         "sector_details": sector_details,
@@ -194,9 +205,14 @@ def fetch_dashboard_topact(page: Page, ny_date: datetime, max_pages: int = 3) ->
 
     # 用 pyte 重建第一页
     all_pages_text = []
+    logger.info(f"Dashboard WS 消息数: {len(ws_messages)}")
     screen_text = _rebuild_screen(ws_messages)
     all_pages_text.append(screen_text)
-    logger.info(f"TOPACT 第1页: {len(screen_text)} 字符")
+    if not screen_text:
+        page.screenshot(path=str(config.LOG_DIR / "dashboard_empty.png"))
+        logger.error("TOPACT 第1页为空，已截图 dashboard_empty.png")
+    else:
+        logger.info(f"TOPACT 第1页: {len(screen_text)} 字符")
 
     # 翻页获取更多数据
     for pg in range(2, max_pages + 1):
@@ -356,7 +372,10 @@ def run_scraper(bj_date: datetime, ny_date: datetime) -> dict:
                 sector_data["sector_details"],
                 dashboard_data["topact_text"],
             )
-            logger.info(f"异动标的: {result['anomaly_tickers']}")
+            if result["anomaly_tickers"]:
+                logger.info(f"异动标的 ({len(result['anomaly_tickers'])}个): {result['anomaly_tickers']}")
+            else:
+                logger.warning("未检测到异动标的 (VR/Chg 未达阈值或数据解析问题)")
 
         finally:
             browser.close()

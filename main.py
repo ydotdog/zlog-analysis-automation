@@ -13,6 +13,7 @@ import subprocess
 import logging
 import argparse
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -27,12 +28,13 @@ config.LOG_DIR.mkdir(exist_ok=True)
 
 def run_claude_cli(prompt: str, system_prompt: str = None,
                    allowed_tools: str = None, max_budget: float = None,
-                   timeout: int = 9000) -> str:
+                   timeout: int = 9000, caller: str = "") -> str:
     """
     调用 Claude CLI (-p 模式)，返回输出文本。
     prompt 通过临时文件 stdin 传递，输出重定向到临时文件（避免 capture_output 缓冲问题）。
     即使 CLI exit!=0，只要有输出内容就返回（绕过 signature_delta 解析 bug）。
     """
+    tag = f"[claude-cli:{caller}]" if caller else "[claude-cli]"
     cmd = [config.CLAUDE_CMD, "-p", "--model", config.CLAUDE_MODEL]
 
     if system_prompt:
@@ -44,6 +46,12 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
 
     if max_budget:
         cmd.extend(["--max-budget-usd", str(max_budget)])
+
+    # 记录调用参数（不含 system_prompt 内容，太长）
+    cmd_display = [c for c in cmd if c != system_prompt]
+    logger.info(f"{tag} 调用开始: {' '.join(cmd_display)}")
+    logger.info(f"{tag} prompt={len(prompt)}字符, system_prompt={len(system_prompt) if system_prompt else 0}字符")
+    logger.debug(f"{tag} prompt前200字符: {prompt[:200]}")
 
     # 临时文件：prompt 输入 + stdout 输出
     prompt_file = tempfile.NamedTemporaryFile(
@@ -57,6 +65,8 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
     )
     output_file.close()
 
+    t0 = time.monotonic()
+
     try:
         with open(prompt_file.name, "r", encoding="utf-8") as fin, \
              open(output_file.name, "w", encoding="utf-8") as fout:
@@ -69,26 +79,55 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
                 timeout=timeout,
             )
 
+        elapsed = time.monotonic() - t0
         output = Path(output_file.name).read_text(encoding="utf-8").strip()
 
+        logger.info(
+            f"{tag} 调用完成: exit={result.returncode}, "
+            f"output={len(output)}字符, elapsed={elapsed:.1f}s"
+        )
+
+        if result.stderr:
+            logger.debug(f"{tag} stderr: {result.stderr[:500]}")
+
         if result.returncode != 0:
-            logger.warning(f"Claude CLI exit={result.returncode}, stderr: {result.stderr[:300]}")
-            # 即使 exit!=0，如果已有实质输出就返回（绕过 signature_delta bug）
+            logger.warning(
+                f"{tag} 非零退出码 exit={result.returncode}, "
+                f"stderr: {result.stderr[:500]}"
+            )
             if output:
-                logger.info(f"虽然 exit!=0，但已有 {len(output)} 字符输出，视为成功")
+                logger.info(f"{tag} 虽然 exit!=0，但已有 {len(output)} 字符输出，视为成功")
+                if len(output) < 200:
+                    logger.warning(f"{tag} 输出较短，完整内容: [{output}]")
                 return output
-            logger.error("Claude CLI 失败且无有效输出")
+            logger.error(f"{tag} 失败且无有效输出")
             return ""
+
+        # exit=0 但输出异常短时，记录完整内容供排查
+        if len(output) < 200:
+            logger.warning(
+                f"{tag} 输出仅 {len(output)} 字符（可能异常），"
+                f"完整内容: [{output}]"
+            )
 
         return output
 
     except subprocess.TimeoutExpired:
-        # 超时时也尝试读取已有输出
+        elapsed = time.monotonic() - t0
         output = Path(output_file.name).read_text(encoding="utf-8").strip()
+        logger.error(
+            f"{tag} 超时 ({elapsed:.0f}s/{timeout}s), "
+            f"已有输出={len(output)}字符"
+        )
         if output:
-            logger.warning(f"Claude CLI 超时但已有 {len(output)} 字符输出，视为成功")
+            logger.warning(f"{tag} 超时但已有 {len(output)} 字符输出，视为成功")
+            if len(output) < 200:
+                logger.warning(f"{tag} 超时输出完整内容: [{output}]")
             return output
-        logger.error(f"Claude CLI 调用超时 ({timeout}秒)")
+        return ""
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        logger.error(f"{tag} 异常: {type(e).__name__}: {e}, elapsed={elapsed:.1f}s")
         return ""
     finally:
         Path(prompt_file.name).unlink(missing_ok=True)
@@ -101,6 +140,7 @@ def search_news(tickers: list, ny_date: datetime) -> str:
     一次性搜索所有标的，返回新闻汇总文本。
     """
     if not tickers:
+        logger.info("无异动标的需要搜索新闻，跳过")
         return "无异动标的需要搜索新闻。"
 
     date_str = ny_date.strftime("%Y-%m-%d")
@@ -118,15 +158,26 @@ def search_news(tickers: list, ny_date: datetime) -> str:
 4. 只报告事实，不做投资建议
 5. 用中文回复"""
 
-    logger.info(f"搜索新闻: {ticker_str}")
+    logger.info(f"搜索新闻: {ticker_str} (共{len(tickers)}个标的, 日期={date_str})")
     result = run_claude_cli(
         prompt,
         allowed_tools="WebSearch WebFetch",
         max_budget=2.0,
+        caller="search_news",
     )
 
     if not result:
+        logger.error(f"新闻搜索返回空结果。标的: {ticker_str}")
         return f"新闻搜索未返回结果。标的：{ticker_str}"
+
+    # 检查结果质量：每个 ticker 应至少贡献 ~100 字符
+    expected_min = len(tickers) * 80
+    if len(result) < expected_min:
+        logger.warning(
+            f"新闻搜索结果偏短: {len(result)}字符 (期望>={expected_min}, "
+            f"{len(tickers)}个标的)。可能 WebSearch 未正常工作。"
+            f"完整内容: [{result}]"
+        )
 
     return result
 
@@ -275,7 +326,16 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
         prompt,
         system_prompt=system_prompt,
         max_budget=5.0,
+        caller="generate_review",
     )
+
+    if not result:
+        logger.error("复盘生成返回空结果")
+    elif len(result) < 500:
+        logger.warning(
+            f"复盘结果异常短: {len(result)}字符 (期望>=2000)。"
+            f"完整内容: [{result}]"
+        )
 
     return result
 
@@ -304,19 +364,43 @@ def run_daily(target_bj_date: datetime = None):
 
     # 2. 数据采集
     logger.info("--- 步骤 1/4: 数据采集 ---")
+    t_scrape = time.monotonic()
     try:
         data = run_scraper(bj_date, ny_date)
     except Exception as e:
         logger.error(f"数据采集失败: {e}")
         raise
+    t_scrape = time.monotonic() - t_scrape
+
+    # 数据质量摘要
+    data_fields = {
+        "zlog_text": ("Sentiment/ETF/TD", 100),
+        "ms_text": ("MS表", 200),
+        "sector_summary": ("板块概览", 50),
+        "sector_details": ("板块详情", 100),
+        "topact_text": ("TOPACT", 200),
+    }
+    logger.info(f"数据采集完成 ({t_scrape:.1f}s)，质量摘要:")
+    for field, (label, min_len) in data_fields.items():
+        actual = len(data.get(field, ""))
+        status = "OK" if actual >= min_len else "SHORT"
+        logger.info(f"  {label}: {actual}字符 [{status}]")
+        if actual < min_len and actual > 0:
+            logger.warning(f"  {label} 内容偏短，前200字符: [{data[field][:200]}]")
+        elif actual == 0:
+            logger.warning(f"  {label} 为空！")
+    logger.info(f"  异动标的: {data['anomaly_tickers']}")
 
     # 3. 搜索新闻
     logger.info("--- 步骤 2/4: 新闻搜索 ---")
+    t_news = time.monotonic()
     news_text = search_news(data["anomaly_tickers"], ny_date)
-    logger.info(f"新闻搜索完成 ({len(news_text)} 字符)")
+    t_news = time.monotonic() - t_news
+    logger.info(f"新闻搜索完成 ({len(news_text)}字符, {t_news:.1f}s)")
 
     # 4. 生成复盘
     logger.info("--- 步骤 3/4: 生成复盘 ---")
+    t_review = time.monotonic()
     review = generate_daily_review(
         zlog_text=data["zlog_text"],
         ms_text=data["ms_text"],
@@ -327,6 +411,7 @@ def run_daily(target_bj_date: datetime = None):
         bj_date=bj_date,
         ny_date=ny_date,
     )
+    t_review = time.monotonic() - t_review
 
     if not review:
         logger.error("复盘生成失败，Claude CLI 未返回内容")
@@ -335,8 +420,11 @@ def run_daily(target_bj_date: datetime = None):
     # 5. 保存
     logger.info("--- 步骤 4/4: 保存复盘 ---")
     review_path.write_text(review, encoding="utf-8")
-    logger.info(f"复盘已保存: {review_path}")
-    logger.info(f"===== 每日复盘完成: {review_filename} =====")
+    logger.info(f"复盘已保存: {review_path} ({len(review)}字符)")
+    logger.info(
+        f"===== 每日复盘完成: {review_filename} "
+        f"(采集{t_scrape:.0f}s + 新闻{t_news:.0f}s + 复盘{t_review:.0f}s) ====="
+    )
 
     return review_path
 
