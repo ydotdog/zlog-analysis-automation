@@ -182,56 +182,6 @@ def search_news(tickers: list, ny_date: datetime) -> str:
     return result
 
 
-def _trim_sector_details(sector_details: str, max_stocks: int = 5) -> str:
-    """每个板块只保留前 N 个标的，减少 prompt 大小。"""
-    trimmed = []
-    for line in sector_details.split("\n"):
-        if "|" not in line:
-            trimmed.append(line)
-            continue
-        parts = line.split("|", 1)
-        if len(parts) < 2:
-            trimmed.append(line)
-            continue
-        sector_name = parts[0]
-        stocks = parts[1].split(";")
-        trimmed.append(f"{sector_name}|{';'.join(stocks[:max_stocks])}")
-    return "\n".join(trimmed)
-
-
-def _trim_topact(topact_text: str) -> str:
-    """只保留 TOPACT 第一页（约30条最重要的标的）+ 底部汇总行。"""
-    # 找到第一页和第二页的分界（空行分隔）
-    pages = topact_text.split("\n\n")
-    if pages:
-        return pages[0]  # 只返回第一页
-    return topact_text[:8000]
-
-
-def _trim_ms_table(ms_text: str, max_rows: int = 22) -> str:
-    """只保留 MS 表的表头 + Ex 行 + 最近 N 个交易日，减少 prompt 大小。"""
-    lines = ms_text.split("\n")
-    # 保留表头（前6行：标题、边框、列名、边框、Ex行、分隔行）和最近的数据行
-    header_lines = []
-    data_lines = []
-    footer_lines = []
-    in_data = False
-    for line in lines:
-        if "Ex" in line or "DT" in line or "┌" in line or "├" in line:
-            header_lines.append(line)
-            in_data = True
-        elif "└" in line:
-            footer_lines.append(line)
-        elif in_data and "│" in line:
-            data_lines.append(line)
-        else:
-            header_lines.append(line)
-
-    # 保留 Ex 行 + 最近 max_rows 个数据行
-    trimmed = header_lines + data_lines[:max_rows] + footer_lines
-    return "\n".join(trimmed)
-
-
 def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
                           sector_details: str, topact_text: str, news_text: str,
                           bj_date: datetime, ny_date: datetime) -> str:
@@ -269,9 +219,9 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
         zlog_text if zlog_text else "（zlog 数据未获取到）",
         "",
         "=" * 60,
-        "【二、MS Daily 表（市场整体指标历史，最近20个交易日）】",
+        "【二、MS Daily 表（市场整体指标历史）】",
         "=" * 60,
-        _trim_ms_table(ms_text) if ms_text else "（MS 数据未获取到）",
+        ms_text if ms_text else "（MS 数据未获取到）",
         "",
         "=" * 60,
         "【三、板块概览（按 Hi 排序）】",
@@ -283,12 +233,12 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
         "【四、板块详情（各板块持仓）】",
         "格式：板块名|TICKER,TO,Chg,状态;...",
         "=" * 60,
-        _trim_sector_details(sector_details) if sector_details else "（板块详情未获取到）",
+        sector_details if sector_details else "（板块详情未获取到）",
         "",
         "=" * 60,
-        "【五、TOPACT 异动表（按 TO 排序，前30名）】",
+        "【五、TOPACT 异动表（按 TO 排序）】",
         "=" * 60,
-        _trim_topact(topact_text) if topact_text else "（TOPACT 数据未获取到）",
+        topact_text if topact_text else "（TOPACT 数据未获取到）",
     ]
 
     if news_text:
@@ -306,7 +256,7 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
             "=" * 60,
             "【参考：前一交易日复盘（仅供风格和连续性参考，不要续写）】",
             "=" * 60,
-            prev_review[:3000],
+            prev_review,
         ])
 
     # 末尾重复任务指令，防止模型被数据淹没后偏离任务
