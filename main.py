@@ -3,9 +3,8 @@
 每日自动复盘主流程：
   1. 计算日期
   2. Playwright 采集数据 (sector + MS + dashboard/TOPACT)
-  3. Claude CLI (opus) 搜索异动标的新闻
-  4. Claude CLI (opus) 生成每日复盘
-  5. 保存 markdown 到 复盘/ 目录
+  3. Claude CLI (opus) 生成复盘（模型自主搜索新闻）
+  4. 保存 markdown 到 复盘/ 目录
 """
 
 import sys
@@ -156,57 +155,8 @@ def _run_claude_cli_once(prompt: str, system_prompt: str, allowed_tools: str,
         Path(output_file.name).unlink(missing_ok=True)
 
 
-def search_news(tickers: list, ny_date: datetime) -> str:
-    """
-    用 Claude CLI + WebSearch 搜索异动标的新闻。
-    一次性搜索所有标的，返回新闻汇总文本。
-    """
-    if not tickers:
-        logger.info("无异动标的需要搜索新闻，跳过")
-        return "无异动标的需要搜索新闻。"
-
-    date_str = ny_date.strftime("%Y-%m-%d")
-    ticker_str = ", ".join(tickers)
-
-    prompt = f"""请搜索以下美股标的在 {date_str} 前后（纽约时间）的最新新闻。
-对于每个标的，查找任何重大事件（财报发布、FDA决定、并购、分析师评级调整、政策变动、行业事件等）。
-
-标的列表：{ticker_str}
-
-要求：
-1. 对每个标的分别报告，格式为 "**TICKER**: 新闻摘要"
-2. 注意新闻发布时间是否与 {date_str} 的价格变动匹配
-3. 如果某个标的找不到明确新闻，写 "无重大新闻，消息面待追踪"
-4. 只报告事实，不做投资建议
-5. 用中文回复"""
-
-    logger.info(f"搜索新闻: {ticker_str} (共{len(tickers)}个标的, 日期={date_str})")
-    result = run_claude_cli(
-        prompt,
-        allowed_tools="WebSearch WebFetch",
-        max_budget=2.0,
-        caller="search_news",
-        max_retries=2,
-    )
-
-    if not result:
-        logger.error(f"新闻搜索返回空结果。标的: {ticker_str}")
-        return f"新闻搜索未返回结果。标的：{ticker_str}"
-
-    # 检查结果质量：每个 ticker 应至少贡献 ~100 字符
-    expected_min = len(tickers) * 80
-    if len(result) < expected_min:
-        logger.warning(
-            f"新闻搜索结果偏短: {len(result)}字符 (期望>={expected_min}, "
-            f"{len(tickers)}个标的)。可能 WebSearch 未正常工作。"
-            f"完整内容: [{result}]"
-        )
-
-    return result
-
-
 def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
-                          sector_details: str, topact_text: str, news_text: str,
+                          sector_details: str, topact_text: str,
                           bj_date: datetime, ny_date: datetime) -> str:
     """
     用 Claude CLI 生成每日复盘 markdown。
@@ -264,15 +214,6 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
         topact_text if topact_text else "（TOPACT 数据未获取到）",
     ]
 
-    if news_text:
-        prompt_parts.extend([
-            "",
-            "=" * 60,
-            "【六、异动标的新闻搜索结果】",
-            "=" * 60,
-            news_text,
-        ])
-
     if prev_review:
         prompt_parts.extend([
             "",
@@ -298,7 +239,8 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
     result = run_claude_cli(
         prompt,
         system_prompt=system_prompt,
-        max_budget=5.0,
+        allowed_tools="WebSearch WebFetch",
+        max_budget=8.0,
         caller="generate_review",
     )
 
@@ -336,7 +278,7 @@ def run_daily(target_bj_date: datetime = None):
         return review_path
 
     # 2. 数据采集（有 checkpoint 时复用）
-    logger.info("--- 步骤 1/4: 数据采集 ---")
+    logger.info("--- 步骤 1/3: 数据采集 ---")
     bj_str = config.format_bj_date_str(bj_date)
     checkpoint_path = config.LOG_DIR / f"scrape_{bj_str}.json"
     t_scrape = time.monotonic()
@@ -383,17 +325,8 @@ def run_daily(target_bj_date: datetime = None):
             logger.warning(f"  {label} 内容偏短，前200字符: [{data[field][:200]}]")
         elif actual == 0:
             logger.warning(f"  {label} 为空！")
-    logger.info(f"  异动标的: {data['anomaly_tickers']}")
-
-    # 3. 搜索新闻
-    logger.info("--- 步骤 2/4: 新闻搜索 ---")
-    t_news = time.monotonic()
-    news_text = search_news(data["anomaly_tickers"], ny_date)
-    t_news = time.monotonic() - t_news
-    logger.info(f"新闻搜索完成 ({len(news_text)}字符, {t_news:.1f}s)")
-
-    # 4. 生成复盘
-    logger.info("--- 步骤 3/4: 生成复盘 ---")
+    # 3. 生成复盘（模型自主搜索新闻）
+    logger.info("--- 步骤 2/3: 生成复盘 ---")
     t_review = time.monotonic()
     review = generate_daily_review(
         zlog_text=data["zlog_text"],
@@ -401,7 +334,6 @@ def run_daily(target_bj_date: datetime = None):
         sector_summary=data["sector_summary"],
         sector_details=data["sector_details"],
         topact_text=data["topact_text"],
-        news_text=news_text,
         bj_date=bj_date,
         ny_date=ny_date,
     )
@@ -411,13 +343,13 @@ def run_daily(target_bj_date: datetime = None):
         logger.error("复盘生成失败，Claude CLI 未返回内容")
         return None
 
-    # 5. 保存
-    logger.info("--- 步骤 4/4: 保存复盘 ---")
+    # 4. 保存
+    logger.info("--- 步骤 3/3: 保存复盘 ---")
     review_path.write_text(review, encoding="utf-8")
     logger.info(f"复盘已保存: {review_path} ({len(review)}字符)")
     logger.info(
         f"===== 每日复盘完成: {review_filename} "
-        f"(采集{t_scrape:.0f}s + 新闻{t_news:.0f}s + 复盘{t_review:.0f}s) ====="
+        f"(采集{t_scrape:.0f}s + 复盘{t_review:.0f}s) ====="
     )
 
     return review_path
