@@ -12,13 +12,9 @@ Chronoweb 数据采集 (Playwright)
   └─ dashboard 页面 → TOPACT 异动表 (WebSocket 终端)
         │
         ▼
-异动检测 (VR>200 或 |Chg|>15%)
-        │
-        ▼
-Claude CLI + WebSearch → 异动标的新闻搜索
-        │
-        ▼
-Claude CLI Opus → 生成每日复盘 (markdown)
+Claude CLI Opus + WebSearch/WebFetch
+  模型分析数据，自主判断哪些标的需要搜索新闻，
+  搜索结果直接融入复盘分析（一步完成）
         │
         ▼
 保存到 复盘/ 目录
@@ -78,10 +74,10 @@ python3 main.py --install-cron
 ## 项目结构
 
 ```
-├── main.py           # 每日复盘主流程
+├── main.py           # 每日复盘主流程（采集 → 生成 → 保存）
 ├── weekly.py         # 每周复盘
 ├── scraper.py        # Playwright 数据采集 + 解析 + 校验
-├── config.py         # 配置：URL、路径、日期逻辑、异动阈值
+├── config.py         # 配置：URL、路径、日期逻辑
 ├── setup.sh          # 一键安装脚本
 ├── .env.example      # 凭证模板
 ├── requirements.txt  # Python 依赖
@@ -116,15 +112,17 @@ DATA_DIR=/path/to/output          # 可选，默认 ~/Downloads/zlog_sector_dail
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `ANOMALY_VR_THRESHOLD` | 200 | VR 超过此值视为极端放量 |
-| `ANOMALY_CHG_THRESHOLD` | 15.0 | \|Chg\| 超过此值视为极端涨跌 (%) |
-| `MAX_NEWS_TICKERS` | 8 | 最多搜索新闻的标的数量 |
 | `CLAUDE_MODEL` | `claude-opus-4-6` | Claude 模型 |
+| `CLAUDE_CMD` | `claude` | Claude CLI 路径 |
+
+### CLAUDE.md — 模型行为控制
+
+`DATA_DIR/CLAUDE.md` 作为 system prompt 传给模型，控制复盘的输出结构和风格。其中应包含工具使用指引，告诉模型在分析过程中何时主动使用 WebSearch 搜索新闻（如 VR 极端值、异常涨跌幅、板块集体异动等）。
 
 ## 容错机制
 
 - **Checkpoint 复用**：采集数据保存为 `scrape_*.json`，复盘生成失败时下次跳过采集直接复用
-- **重试退避**：Claude CLI 调用失败时自动重试（30s → 60s → 120s），新闻搜索最多重试 2 次
+- **重试退避**：Claude CLI 调用失败时自动重试（30s → 60s → 120s）
 - **数据校验**：采集后自动校验 zlog 关键字段、板块数量、TOPACT 格式，异常记 warning
 - **故障截图**：数据为空时自动保存截图（`zlog_empty.png`、`sector_empty.png`、`dashboard_empty.png`）
 

@@ -263,112 +263,6 @@ def _rebuild_screen(ws_messages: list) -> str:
     return re.sub(r'\n{3,}', '\n\n', result).strip()
 
 
-def _detect_topact_columns(header_line: str) -> dict:
-    """
-    从 TOPACT 表头行自动检测列位置。
-    返回 {"VR": col_index, "Chg": col_index, ...} 或空 dict。
-    """
-    cells = [c.strip() for c in header_line.split("│")]
-    col_map = {}
-    for i, cell in enumerate(cells):
-        upper = cell.upper()
-        if upper == "VR":
-            col_map["VR"] = i
-        elif upper == "CHG":
-            col_map["Chg"] = i
-    return col_map
-
-
-def parse_anomaly_tickers(sector_details: str, topact_text: str) -> list:
-    """
-    从板块详情和 TOPACT 数据中识别异动标的，用于新闻搜索。
-    TOPACT 按列位置解析（自动检测列头，fallback 到第11列=VR）。
-    """
-    candidates = []  # (ticker, score, reason)
-
-    # 从 TOPACT 文本按列位置提取 VR 和 Chg
-    if topact_text:
-        col_map = {}
-        for line in topact_text.split("\n"):
-            if "│" not in line:
-                continue
-            cells = [c.strip() for c in line.split("│")]
-
-            # 尝试从表头行检测列位置（只检测一次）
-            if not col_map:
-                detected = _detect_topact_columns(line)
-                if detected:
-                    col_map = detected
-                    logger.debug(f"TOPACT 列检测: {col_map} (来自行: {line[:80]})")
-                    continue  # 表头行本身跳过
-
-            if len(cells) < 10:
-                continue
-
-            ticker = cells[0] if cells[0] else (cells[1] if len(cells) > 1 else "")
-            ticker = ticker.strip()
-            if not ticker or not ticker.isalpha():
-                continue
-
-            # VR: 优先用检测到的列位置，fallback 到第11列（index 10）
-            vr_col = col_map.get("VR", 10)
-            if vr_col < len(cells):
-                raw_vr = cells[vr_col].lstrip("*+").strip()
-                try:
-                    vr = float(raw_vr)
-                    if vr >= config.ANOMALY_VR_THRESHOLD:
-                        candidates.append((ticker, vr, f"VR={vr:.0f}"))
-                except ValueError:
-                    pass
-
-            # Chg: 使用检测到的列位置
-            chg_col = col_map.get("Chg")
-            if chg_col and chg_col < len(cells):
-                raw_chg = cells[chg_col].strip()
-                try:
-                    chg = float(raw_chg)
-                    if abs(chg) >= config.ANOMALY_CHG_THRESHOLD:
-                        candidates.append((ticker, abs(chg), f"Chg={chg:+.1f}%"))
-                except ValueError:
-                    pass
-
-        if not col_map:
-            logger.warning("TOPACT 未检测到列头（VR/Chg），使用 fallback 列位置")
-
-    # 从板块详情中找极端涨跌幅
-    # 格式: sector_name|ticker1,val1/val2/...;ticker2,...
-    if sector_details:
-        for sector_line in sector_details.split("\n"):
-            if "|" not in sector_line:
-                continue
-            parts = sector_line.split("|", 1)
-            if len(parts) < 2:
-                continue
-            for stock in parts[1].split(";"):
-                fields = stock.split(",", 1)
-                if len(fields) < 2:
-                    continue
-                ticker = fields[0].strip()
-                vals = fields[1].split("/")
-                if vals:
-                    try:
-                        chg = float(vals[0])
-                        if abs(chg) >= config.ANOMALY_CHG_THRESHOLD and ticker:
-                            candidates.append((ticker, abs(chg), f"SectorChg={chg:+.1f}%"))
-                    except (ValueError, IndexError):
-                        continue
-
-    # 去重，按分值排序
-    seen = set()
-    unique = []
-    for ticker, score, reason in sorted(candidates, key=lambda x: -x[1]):
-        if ticker not in seen:
-            seen.add(ticker)
-            unique.append(ticker)
-            logger.debug(f"异动候选: {ticker} ({reason})")
-    return unique[:config.MAX_NEWS_TICKERS]
-
-
 def run_scraper(bj_date: datetime, ny_date: datetime) -> dict:
     """执行完整的数据采集流程。"""
     config.LOG_DIR.mkdir(exist_ok=True)
@@ -383,7 +277,6 @@ def run_scraper(bj_date: datetime, ny_date: datetime) -> dict:
         "sector_summary": "",
         "sector_details": "",
         "topact_text": "",
-        "anomaly_tickers": [],
     }
 
     with sync_playwright() as p:
@@ -411,16 +304,6 @@ def run_scraper(bj_date: datetime, ny_date: datetime) -> dict:
             # dashboard: TOPACT (WebSocket 终端)
             dashboard_data = fetch_dashboard_topact(page, ny_date, max_pages=3)
             result["topact_text"] = dashboard_data["topact_text"]
-
-            # 识别异动标的
-            result["anomaly_tickers"] = parse_anomaly_tickers(
-                sector_data["sector_details"],
-                dashboard_data["topact_text"],
-            )
-            if result["anomaly_tickers"]:
-                logger.info(f"异动标的 ({len(result['anomaly_tickers'])}个): {result['anomaly_tickers']}")
-            else:
-                logger.warning("未检测到异动标的 (VR/Chg 未达阈值或数据解析问题)")
 
         finally:
             browser.close()

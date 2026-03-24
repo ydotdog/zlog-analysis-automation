@@ -33,11 +33,6 @@ DASHBOARD_URL_TPL = (
     "?arg=-p&arg=-y&arg={year}&arg=-m&arg={month:02d}&arg=-d&arg={day:02d}"
 )
 
-# === 异动检测阈值（用于筛选需要搜索新闻的标的）===
-ANOMALY_VR_THRESHOLD = 200       # VR > 200 视为极端放量
-ANOMALY_CHG_THRESHOLD = 15.0     # |Chg| > 15% 视为极端涨跌
-MAX_NEWS_TICKERS = 8             # 最多搜索新闻的标的数量
-
 # === Claude CLI 配置 ===
 CLAUDE_MODEL = "claude-opus-4-6"
 CLAUDE_CMD = "claude"
