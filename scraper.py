@@ -263,36 +263,80 @@ def _rebuild_screen(ws_messages: list) -> str:
     return re.sub(r'\n{3,}', '\n\n', result).strip()
 
 
+def _detect_topact_columns(header_line: str) -> dict:
+    """
+    从 TOPACT 表头行自动检测列位置。
+    返回 {"VR": col_index, "Chg": col_index, ...} 或空 dict。
+    """
+    cells = [c.strip() for c in header_line.split("│")]
+    col_map = {}
+    for i, cell in enumerate(cells):
+        upper = cell.upper()
+        if upper == "VR":
+            col_map["VR"] = i
+        elif upper == "CHG":
+            col_map["Chg"] = i
+    return col_map
+
+
 def parse_anomaly_tickers(sector_details: str, topact_text: str) -> list:
     """
     从板块详情和 TOPACT 数据中识别异动标的，用于新闻搜索。
+    TOPACT 按列位置解析（自动检测列头，fallback 到第11列=VR）。
     """
     candidates = []  # (ticker, score, reason)
 
-    # 从 TOPACT 文本提取 VR 极端值（带 * 标记的）
+    # 从 TOPACT 文本按列位置提取 VR 和 Chg
     if topact_text:
+        col_map = {}
         for line in topact_text.split("\n"):
             if "│" not in line:
                 continue
-            cells = [c.strip() for c in line.split("│") if c.strip()]
+            cells = [c.strip() for c in line.split("│")]
+
+            # 尝试从表头行检测列位置（只检测一次）
+            if not col_map:
+                detected = _detect_topact_columns(line)
+                if detected:
+                    col_map = detected
+                    logger.debug(f"TOPACT 列检测: {col_map} (来自行: {line[:80]})")
+                    continue  # 表头行本身跳过
+
             if len(cells) < 10:
                 continue
-            ticker = cells[0]
-            if not ticker.isalpha():
+
+            ticker = cells[0] if cells[0] else (cells[1] if len(cells) > 1 else "")
+            ticker = ticker.strip()
+            if not ticker or not ticker.isalpha():
                 continue
-            # VR 列（第10列左右）可能带 * 前缀
-            for cell in cells:
-                if cell.startswith("*") or cell.startswith("+"):
-                    try:
-                        vr = float(cell.lstrip("*+"))
-                        if vr >= config.ANOMALY_VR_THRESHOLD:
-                            candidates.append((ticker, vr, "VR"))
-                            break
-                    except ValueError:
-                        continue
+
+            # VR: 优先用检测到的列位置，fallback 到第11列（index 10）
+            vr_col = col_map.get("VR", 10)
+            if vr_col < len(cells):
+                raw_vr = cells[vr_col].lstrip("*+").strip()
+                try:
+                    vr = float(raw_vr)
+                    if vr >= config.ANOMALY_VR_THRESHOLD:
+                        candidates.append((ticker, vr, f"VR={vr:.0f}"))
+                except ValueError:
+                    pass
+
+            # Chg: 使用检测到的列位置
+            chg_col = col_map.get("Chg")
+            if chg_col and chg_col < len(cells):
+                raw_chg = cells[chg_col].strip()
+                try:
+                    chg = float(raw_chg)
+                    if abs(chg) >= config.ANOMALY_CHG_THRESHOLD:
+                        candidates.append((ticker, abs(chg), f"Chg={chg:+.1f}%"))
+                except ValueError:
+                    pass
+
+        if not col_map:
+            logger.warning("TOPACT 未检测到列头（VR/Chg），使用 fallback 列位置")
 
     # 从板块详情中找极端涨跌幅
-    # 新格式: sector_name|ticker1,Chg/VR/Hi/Di/TO;ticker2,...
+    # 格式: sector_name|ticker1,val1/val2/...;ticker2,...
     if sector_details:
         for sector_line in sector_details.split("\n"):
             if "|" not in sector_line:
@@ -310,7 +354,7 @@ def parse_anomaly_tickers(sector_details: str, topact_text: str) -> list:
                     try:
                         chg = float(vals[0])
                         if abs(chg) >= config.ANOMALY_CHG_THRESHOLD and ticker:
-                            candidates.append((ticker, abs(chg), "Chg"))
+                            candidates.append((ticker, abs(chg), f"SectorChg={chg:+.1f}%"))
                     except (ValueError, IndexError):
                         continue
 
@@ -321,6 +365,7 @@ def parse_anomaly_tickers(sector_details: str, topact_text: str) -> list:
         if ticker not in seen:
             seen.add(ticker)
             unique.append(ticker)
+            logger.debug(f"异动候选: {ticker} ({reason})")
     return unique[:config.MAX_NEWS_TICKERS]
 
 
