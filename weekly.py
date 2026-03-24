@@ -10,6 +10,7 @@
 import sys
 import logging
 import argparse
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -149,22 +150,31 @@ def generate_weekly_review(saturday_bj: datetime = None):
         base_prompt = config.CLAUDE_MD_PATH.read_text(encoding="utf-8")
         system_prompt = base_prompt + "\n\n## 周复盘补充说明\n你现在需要生成的是【周复盘】而非每日复盘。周复盘应该从更高的视角审视一整周的市场行为，重点分析叙事的生命周期、信号与噪声的区分、以及对下周的前瞻。"
 
-    logger.info(f"生成周复盘中... (prompt 长度: {len(prompt)} 字符)")
+    logger.info(f"生成周复盘中... (prompt={len(prompt)}字符, system_prompt={len(system_prompt)}字符)")
+    t0 = time.monotonic()
     review_text = run_claude_cli(
         prompt,
         system_prompt=system_prompt,
         max_budget=8.0,
+        caller="weekly_review",
     )
+    elapsed = time.monotonic() - t0
 
     if not review_text:
-        logger.error("周复盘生成失败")
+        logger.error(f"周复盘生成失败 (耗时{elapsed:.0f}s)")
         return None
+
+    if len(review_text) < 1000:
+        logger.warning(
+            f"周复盘结果异常短: {len(review_text)}字符 (期望>=3000)。"
+            f"完整内容: [{review_text}]"
+        )
 
     # 保存
     filename = f"{end_date.strftime('%Y%m%d')}_{week_label}_周复盘.md"
     filepath = config.REVIEW_DIR / filename
     filepath.write_text(review_text, encoding="utf-8")
-    logger.info(f"周复盘已保存: {filepath}")
+    logger.info(f"周复盘已保存: {filepath} ({len(review_text)}字符, {elapsed:.0f}s)")
 
     return filepath
 
