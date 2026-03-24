@@ -74,7 +74,7 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
         if result.returncode != 0:
             logger.warning(f"Claude CLI exit={result.returncode}, stderr: {result.stderr[:300]}")
             # 即使 exit!=0，如果已有实质输出就返回（绕过 signature_delta bug）
-            if len(output) > 100:
+            if output:
                 logger.info(f"虽然 exit!=0，但已有 {len(output)} 字符输出，视为成功")
                 return output
             logger.error("Claude CLI 失败且无有效输出")
@@ -85,7 +85,7 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
     except subprocess.TimeoutExpired:
         # 超时时也尝试读取已有输出
         output = Path(output_file.name).read_text(encoding="utf-8").strip()
-        if len(output) > 100:
+        if output:
             logger.warning(f"Claude CLI 超时但已有 {len(output)} 字符输出，视为成功")
             return output
         logger.error(f"Claude CLI 调用超时 ({timeout}秒)")
