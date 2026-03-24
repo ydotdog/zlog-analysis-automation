@@ -52,6 +52,7 @@ python3 weekly.py             # 生成本周周复盘
 |------|------|
 | `--date YYYYMMDD` | 指定北京日期，默认自动检测最新交易日 |
 | `--suffix TEXT` | 输出文件名后缀（如 `--suffix "—new"` → `20260323_NY_周一—new.md`） |
+| `--provider {claude,minimax}` | 模型提供商，默认 `claude`。使用 `minimax` 时需在 `.env` 中配置 MiniMax 凭证 |
 | `--install-cron` | 显示 cron 定时任务安装指令 |
 | `--debug` | 调试模式，显示详细日志 |
 
@@ -107,6 +108,11 @@ sector/               # Sector 页面 HTML 快照
 CHRONOWEB_USER=your_email@example.com
 CHRONOWEB_PASS=your_password
 DATA_DIR=/path/to/output          # 可选，默认 ~/Downloads/zlog_sector_daily
+
+# MiniMax（可选，使用 --provider minimax 时需要）
+MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic
+MINIMAX_API_KEY=your_minimax_api_key
+MINIMAX_MODEL=MiniMax-M2.7-highspeed
 ```
 
 ### config.py 可调参数

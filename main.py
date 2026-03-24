@@ -7,6 +7,7 @@
   4. 保存 markdown 到 复盘/ 目录
 """
 
+import os
 import sys
 import subprocess
 import logging
@@ -29,7 +30,7 @@ config.LOG_DIR.mkdir(exist_ok=True)
 def run_claude_cli(prompt: str, system_prompt: str = None,
                    allowed_tools: str = None, max_budget: float = None,
                    timeout: int = 9000, caller: str = "",
-                   max_retries: int = 1) -> str:
+                   max_retries: int = 1, provider: str = "claude") -> str:
     """
     调用 Claude CLI (-p 模式)，返回输出文本。
     失败时自动重试（指数退避），最多 max_retries 次。
@@ -38,7 +39,8 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
 
     for attempt in range(1, max_retries + 2):  # attempt 1 = 首次调用
         result = _run_claude_cli_once(
-            prompt, system_prompt, allowed_tools, max_budget, timeout, tag
+            prompt, system_prompt, allowed_tools, max_budget, timeout, tag,
+            provider=provider,
         )
         if result:
             return result
@@ -54,14 +56,22 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
 
 
 def _run_claude_cli_once(prompt: str, system_prompt: str, allowed_tools: str,
-                         max_budget: float, timeout: int, tag: str) -> str:
+                         max_budget: float, timeout: int, tag: str,
+                         provider: str = "claude") -> str:
     """单次 Claude CLI 调用。返回输出文本，失败返回空字符串。"""
-    cmd = [config.CLAUDE_CMD, "-p", "--model", config.CLAUDE_MODEL]
+    # 根据 provider 选择模型
+    if provider == "minimax":
+        model = config.MINIMAX_MODEL
+    else:
+        model = config.CLAUDE_MODEL
+
+    cmd = [config.CLAUDE_CMD, "-p", "--model", model]
 
     if system_prompt:
         cmd.extend(["--system-prompt", system_prompt])
 
-    if allowed_tools:
+    # MiniMax 不支持 WebSearch/WebFetch，跳过 allowedTools
+    if allowed_tools and provider != "minimax":
         for tool in allowed_tools.split():
             cmd.extend(["--allowedTools", tool])
 
@@ -88,6 +98,17 @@ def _run_claude_cli_once(prompt: str, system_prompt: str, allowed_tools: str,
 
     t0 = time.monotonic()
 
+    # MiniMax: 通过环境变量让 Claude CLI 转发请求到 MiniMax API
+    env = None
+    if provider == "minimax":
+        if not config.MINIMAX_BASE_URL or not config.MINIMAX_API_KEY:
+            logger.error(f"{tag} MiniMax 配置缺失，请在 .env 中设置 MINIMAX_BASE_URL 和 MINIMAX_API_KEY")
+            return ""
+        env = os.environ.copy()
+        env["ANTHROPIC_BASE_URL"] = config.MINIMAX_BASE_URL
+        env["ANTHROPIC_AUTH_TOKEN"] = config.MINIMAX_API_KEY
+        logger.info(f"{tag} 使用 MiniMax 后端: {config.MINIMAX_BASE_URL}, model={model}")
+
     try:
         with open(prompt_file.name, "r", encoding="utf-8") as fin, \
              open(output_file.name, "w", encoding="utf-8") as fout:
@@ -98,6 +119,7 @@ def _run_claude_cli_once(prompt: str, system_prompt: str, allowed_tools: str,
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=timeout,
+                env=env,
             )
 
         elapsed = time.monotonic() - t0
@@ -157,7 +179,8 @@ def _run_claude_cli_once(prompt: str, system_prompt: str, allowed_tools: str,
 
 def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
                           sector_details: str, topact_text: str,
-                          bj_date: datetime, ny_date: datetime) -> str:
+                          bj_date: datetime, ny_date: datetime,
+                          provider: str = "claude") -> str:
     """
     用 Claude CLI 生成每日复盘 markdown。
     """
@@ -235,13 +258,14 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
 
     prompt = "\n".join(prompt_parts)
 
-    logger.info(f"生成复盘中... (prompt 长度: {len(prompt)} 字符)")
+    logger.info(f"生成复盘中... (prompt 长度: {len(prompt)} 字符, provider={provider})")
     result = run_claude_cli(
         prompt,
         system_prompt=system_prompt,
         allowed_tools="WebSearch WebFetch",
         max_budget=8.0,
         caller="generate_review",
+        provider=provider,
     )
 
     if not result:
@@ -255,7 +279,8 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
     return result
 
 
-def run_daily(target_bj_date: datetime = None, suffix: str = ""):
+def run_daily(target_bj_date: datetime = None, suffix: str = "",
+              provider: str = "claude"):
     """执行每日复盘完整流程。suffix 用于文件名后缀（如 '—new'）。"""
 
     # 1. 计算日期
@@ -340,6 +365,7 @@ def run_daily(target_bj_date: datetime = None, suffix: str = ""):
         topact_text=data["topact_text"],
         bj_date=bj_date,
         ny_date=ny_date,
+        provider=provider,
     )
     t_review = time.monotonic() - t_review
 
@@ -397,6 +423,8 @@ def main():
     parser.add_argument("--date", help="指定北京日期 (YYYYMMDD)，默认自动检测最新交易日")
     parser.add_argument("--install-cron", action="store_true", help="显示 cron 安装指令")
     parser.add_argument("--suffix", default="", help="输出文件名后缀（如 '—new'）")
+    parser.add_argument("--provider", choices=["claude", "minimax"], default="claude",
+                        help="模型提供商：claude（默认）或 minimax")
     parser.add_argument("--debug", action="store_true", help="调试模式，显示详细日志")
     args = parser.parse_args()
 
@@ -420,7 +448,7 @@ def main():
         target_bj = datetime.strptime(args.date, "%Y%m%d")
 
     try:
-        result = run_daily(target_bj, suffix=args.suffix)
+        result = run_daily(target_bj, suffix=args.suffix, provider=args.provider)
         if result:
             print(f"\n复盘完成: {result}")
         else:
