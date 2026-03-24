@@ -425,12 +425,77 @@ def run_scraper(bj_date: datetime, ny_date: datetime) -> dict:
         finally:
             browser.close()
 
+    # 数据校验
+    validate_scrape_data(result)
+
     # 保存采集结果
     summary_path = config.LOG_DIR / f"scrape_{config.format_bj_date_str(bj_date)}.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2, default=str)
 
     return result
+
+
+def validate_scrape_data(data: dict):
+    """
+    校验采集数据的完整性和格式。
+    校验失败只记 warning（不中断流程），便于事后排查数据质量问题。
+    """
+    issues = []
+
+    # zlog: 应包含 Sentiment 相关字段
+    zlog = data.get("zlog_text", "")
+    if not zlog:
+        issues.append("zlog_text 为空")
+    else:
+        expected_keywords = ["Sentiment", "Yes", "Lit"]
+        missing = [k for k in expected_keywords if k not in zlog]
+        if missing:
+            issues.append(f"zlog_text 缺少关键字段: {missing} (前200字符: [{zlog[:200]}])")
+
+    # MS 表: 应包含表格边框字符
+    ms = data.get("ms_text", "")
+    if not ms:
+        issues.append("ms_text 为空")
+    elif "│" not in ms and "┌" not in ms:
+        issues.append(f"ms_text 不含表格字符，可能非表格数据 (前200字符: [{ms[:200]}])")
+
+    # sector: 应有 20+ 个板块
+    summary = data.get("sector_summary", "")
+    if not summary:
+        issues.append("sector_summary 为空")
+    else:
+        sector_count = len([l for l in summary.split("\n") if l.strip()])
+        if sector_count < 20:
+            issues.append(f"sector_summary 仅 {sector_count} 个板块 (期望>=20)")
+
+    details = data.get("sector_details", "")
+    if not details:
+        issues.append("sector_details 为空")
+    else:
+        detail_count = len([l for l in details.split("\n") if "|" in l])
+        if detail_count < 20:
+            issues.append(f"sector_details 仅 {detail_count} 个板块有个股 (期望>=20)")
+
+    # TOPACT: 应包含 │ 分隔的表格行
+    topact = data.get("topact_text", "")
+    if not topact:
+        issues.append("topact_text 为空")
+    else:
+        data_rows = [l for l in topact.split("\n") if "│" in l and l.strip()]
+        if len(data_rows) < 10:
+            issues.append(f"topact_text 仅 {len(data_rows)} 行数据 (期望>=10)")
+        # 检查列头是否包含预期字段
+        header_found = any("VR" in l for l in topact.split("\n")[:5])
+        if not header_found:
+            issues.append("topact_text 前5行未发现 VR 列头，表格格式可能变更")
+
+    if issues:
+        logger.warning(f"数据校验发现 {len(issues)} 个问题:")
+        for issue in issues:
+            logger.warning(f"  - {issue}")
+    else:
+        logger.info("数据校验通过")
 
 
 if __name__ == "__main__":
