@@ -27,7 +27,7 @@ LOGIN_URL = f"{BASE_URL}/login"
 # sector 和 zlog 页面使用北京日期
 SECTOR_URL_TPL = f"{BASE_URL}/sector?year={{year}}&month={{month:02d}}&day={{day:02d}}"
 ZLOG_URL_TPL = f"{BASE_URL}/zlog?year={{year}}&month={{month:02d}}&day={{day:02d}}"
-# dashboard 使用纽约日期
+# dashboard 也使用北京日期（与 zlog/sector 一致）
 DASHBOARD_URL_TPL = (
     f"{BASE_URL}/dashboard"
     "?arg=-p&arg=-y&arg={year}&arg=-m&arg={month:02d}&arg=-d&arg={day:02d}"

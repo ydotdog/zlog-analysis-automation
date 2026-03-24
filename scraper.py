@@ -176,15 +176,16 @@ def fetch_sector_page(page: Page, bj_date: datetime) -> dict:
     }
 
 
-def fetch_dashboard_topact(page: Page, ny_date: datetime, max_pages: int = 3) -> dict:
+def fetch_dashboard_topact(page: Page, bj_date: datetime, max_pages: int = 3) -> dict:
     """
     抓取 dashboard TOPACT 数据。
     Dashboard 是 WebSocket 终端应用，通过 pyte 解析 ANSI 终端输出。
+    注意：dashboard URL 使用北京日期（与 zlog/sector 一致）。
 
     流程: 导航 → 收集 WS 消息 → 点击 G → 点击 4 → 用 pyte 重建屏幕 → 翻页
     """
     url = config.DASHBOARD_URL_TPL.format(
-        year=ny_date.year, month=ny_date.month, day=ny_date.day
+        year=bj_date.year, month=bj_date.month, day=bj_date.day
     )
     logger.info(f"抓取 dashboard 页面: {url}")
 
@@ -302,7 +303,7 @@ def run_scraper(bj_date: datetime, ny_date: datetime) -> dict:
             result["sector_details"] = sector_data["sector_details"]
 
             # dashboard: TOPACT (WebSocket 终端)
-            dashboard_data = fetch_dashboard_topact(page, ny_date, max_pages=3)
+            dashboard_data = fetch_dashboard_topact(page, bj_date, max_pages=3)
             result["topact_text"] = dashboard_data["topact_text"]
 
         finally:

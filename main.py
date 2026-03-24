@@ -255,8 +255,8 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
     return result
 
 
-def run_daily(target_bj_date: datetime = None):
-    """执行每日复盘完整流程。"""
+def run_daily(target_bj_date: datetime = None, suffix: str = ""):
+    """执行每日复盘完整流程。suffix 用于文件名后缀（如 '—new'）。"""
 
     # 1. 计算日期
     if target_bj_date is None:
@@ -270,7 +270,11 @@ def run_daily(target_bj_date: datetime = None):
     logger.info(f"目标日期: BJ {bj_date.date()} → NY {ny_date.date()} ({config.WEEKDAY_CN[ny_date.weekday()]})")
 
     # 检查是否已有复盘
-    review_filename = config.format_review_filename(ny_date)
+    base_filename = config.format_review_filename(ny_date)
+    if suffix:
+        review_filename = base_filename.replace(".md", f"{suffix}.md")
+    else:
+        review_filename = base_filename
     review_path = config.REVIEW_DIR / review_filename
     if review_path.exists():
         logger.warning(f"复盘文件已存在: {review_path}")
@@ -392,6 +396,7 @@ def main():
     parser = argparse.ArgumentParser(description="每日美股自动复盘")
     parser.add_argument("--date", help="指定北京日期 (YYYYMMDD)，默认自动检测最新交易日")
     parser.add_argument("--install-cron", action="store_true", help="显示 cron 安装指令")
+    parser.add_argument("--suffix", default="", help="输出文件名后缀（如 '—new'）")
     parser.add_argument("--debug", action="store_true", help="调试模式，显示详细日志")
     args = parser.parse_args()
 
@@ -415,7 +420,7 @@ def main():
         target_bj = datetime.strptime(args.date, "%Y%m%d")
 
     try:
-        result = run_daily(target_bj)
+        result = run_daily(target_bj, suffix=args.suffix)
         if result:
             print(f"\n复盘完成: {result}")
         else:
