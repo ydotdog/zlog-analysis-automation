@@ -1,46 +1,38 @@
 # Known Issues & Optimization TODOs
 
-## P0 - Broken Features
+## Resolved
 
-### 1. 新闻搜索功能失效
-- `search_news()` 通过 Claude CLI + WebSearch 搜索异动标的新闻
-- 连续多次返回仅 30 字符（应返回 1000+ 字符的详细新闻汇总）
-- CLAUDE.md 明确要求对极端异动标的搜索新闻，此功能不工作直接影响复盘质量
-- **需排查**：Claude CLI 的 `--allowedTools WebSearch WebFetch` 在 subprocess 调用中是否正常工作
+### ~~1. 新闻搜索功能失效~~ (排查完成)
+- `search_news()` 间歇性返回 ~30 字符（如 "I cannot perform web searches."）
+- **排查结论**：CLI 基础设施正常（`--allowedTools WebSearch` 在 `-p` 模式下可用），无法本地复现
+- 最可能原因：WebSearch `side_query` API 间歇性 rate limit（Issue #27074）
+- **已加固**：输出 <200 字符时记录完整内容、结果长度校验、重试机制（max_retries=2, 指数退避）
 
-## P1 - Data Quality
+### ~~2. 异动检测逻辑粗糙~~ (已修复)
+- 重写 `parse_anomaly_tickers()`：自动检测 TOPACT 列头（VR/Chg），按列位置精确解析
+- Fallback 到第 11 列（index 10）= VR
+- 同时从 TOPACT 提取 Chg 异动（之前只从 sector_details 提取）
 
-### 2. 异动检测逻辑粗糙
-- `parse_anomaly_tickers()` 通过正则匹配 `│` 分隔的 TOPACT 文本
-- 假设 VR 值在"带 `*` 或 `+` 前缀的 cell"里，实际 TOPACT 表列位置固定（第11列=VR）
-- 应按列位置精确解析，而非字符串猜测
-- 阈值 `VR>200, |Chg|>15%` 可能遗漏重要异动（如 VR=150 但连续出现的标的）
+### ~~3. 数据裁剪策略丢失关键信息~~ (已修复)
+- 删除 `_trim_sector_details`、`_trim_topact`、`_trim_ms_table`
+- 完整数据直接传给模型，不再截断
 
-### 3. 数据裁剪策略丢失关键信息
-- `_trim_sector_details()`: 每板块只留前 5 只，第 6 位可能恰好是当日异动标的
-- `_trim_topact()`: 按 `\n\n` 分割只保留第一页，第二三页标的完全丢弃
-- **改进方向**：按重要性筛选（VR 极端值 > Chg 极端值 > 连续出现 > 大市值），而非按位置截断
+### ~~4. 无数据校验~~ (已修复)
+- 新增 `validate_scrape_data()`，采集后校验：
+  - zlog 含 Sentiment/Yes/Lit 关键字段
+  - MS 表含表格格式字符
+  - sector 板块数量 ≥ 20
+  - TOPACT 数据行 ≥ 10 且含 VR 列头
+- 校验失败记 warning（不中断流程）
 
-### 4. 无数据校验
-- 采集完直接喂给模型，未验证数据完整性：
-  - zlog_text 是否包含 Sentiment/Yes/Lit 字段
-  - sector 25 个板块是否都提取了个股
-  - TOPACT 列头是否匹配预期格式
-- 网站改版或数据异常时会静默生成垃圾复盘
+### ~~5. 无容错和重试机制~~ (已修复)
+- `run_claude_cli` 失败时自动重试（指数退避 30s/60s/120s）
+- `run_daily` 复用已有 `scrape_*.json` checkpoint：采集成功但复盘失败 → 下次跳过采集
+- 数据为空时自动截图（zlog_empty.png / sector_empty.png / dashboard_empty.png）
 
-## P2 - Reliability
-
-### 5. 无容错和重试机制
-- 整个 pipeline 线性执行，任一步失败全部失败
-- 网络抖动 → Playwright 超时 → 全部重来
-- Claude CLI rate limit → 无 backoff 重试
-- 数据采集成功但复盘生成失败 → 下次运行重新采集（应能从中间步骤恢复）
-- **改进方向**：checkpoint 机制（采集结果已保存到 JSON，复盘生成失败时应复用）
-
-### 6. Claude CLI exit=1 的 workaround
-- CLI 2.1.81 在长响应末尾偶发 `signature_delta` JSON 解析错误导致 exit=1
-- 当前 workaround：stdout 重定向到文件，exit!=0 但有输出时视为成功
-- 应在 CLI 升级后移除此 workaround
+### ~~6. Claude CLI exit=1 的 workaround~~ (已修复)
+- 输出门槛从 `len(output) > 100` 改为 `if output:`，不再丢弃有效短输出
+- 应在 CLI 升级修复 `signature_delta` bug 后移除整个 workaround
 
 ## P3 - Performance
 
