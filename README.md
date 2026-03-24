@@ -135,7 +135,7 @@ DATA_DIR=/path/to/output          # 可选，默认 ~/Downloads/zlog_sector_dail
 - Dashboard 页面内容中标注的时间为**纽约时间**
 - 转换规则：`北京日期 - 1天 = 纽约交易日`
 - 北京时间 12:00 后视为当日数据可用
-- 自动跳过周末和美股休市日
+- 自动跳过周末和美股休市日（休市日在 `config.py` 的 `US_HOLIDAYS_2026` 中维护，每年需手动更新）
 
 ## 日志
 
