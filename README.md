@@ -51,6 +51,7 @@ python3 weekly.py             # 生成本周周复盘
 | 参数 | 说明 |
 |------|------|
 | `--date YYYYMMDD` | 指定北京日期，默认自动检测最新交易日 |
+| `--suffix TEXT` | 输出文件名后缀（如 `--suffix "—new"` → `20260323_NY_周一—new.md`） |
 | `--install-cron` | 显示 cron 定时任务安装指令 |
 | `--debug` | 调试模式，显示详细日志 |
 
