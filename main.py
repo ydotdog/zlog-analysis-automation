@@ -28,7 +28,8 @@ config.LOG_DIR.mkdir(exist_ok=True)
 
 
 def run_claude_cli(prompt: str, system_prompt: str = None,
-                   allowed_tools: str = None, max_budget: float = None,
+                   allowed_tools: str = None, disallowed_tools: str = None,
+                   max_budget: float = None,
                    timeout: int = 9000, caller: str = "",
                    max_retries: int = 1, provider: str = "claude") -> str:
     """
@@ -39,8 +40,8 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
 
     for attempt in range(1, max_retries + 2):  # attempt 1 = 首次调用
         result = _run_claude_cli_once(
-            prompt, system_prompt, allowed_tools, max_budget, timeout, tag,
-            provider=provider,
+            prompt, system_prompt, allowed_tools, disallowed_tools,
+            max_budget, timeout, tag, provider=provider,
         )
         if result:
             return result
@@ -56,7 +57,8 @@ def run_claude_cli(prompt: str, system_prompt: str = None,
 
 
 def _run_claude_cli_once(prompt: str, system_prompt: str, allowed_tools: str,
-                         max_budget: float, timeout: int, tag: str,
+                         disallowed_tools: str, max_budget: float,
+                         timeout: int, tag: str,
                          provider: str = "claude") -> str:
     """单次 Claude CLI 调用。返回输出文本，失败返回空字符串。"""
     # 根据 provider 选择模型
@@ -74,6 +76,10 @@ def _run_claude_cli_once(prompt: str, system_prompt: str, allowed_tools: str,
     if allowed_tools and provider != "minimax":
         for tool in allowed_tools.split():
             cmd.extend(["--allowedTools", tool])
+
+    if disallowed_tools:
+        for tool in disallowed_tools.split():
+            cmd.extend(["--disallowedTools", tool])
 
     if max_budget:
         cmd.extend(["--max-budget-usd", str(max_budget)])
@@ -253,6 +259,11 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
         f"【任务】请根据以上所有数据，生成 {ny_display} 的完整每日美股复盘报告。",
         "从标题 '# 美股复盘 · ...' 开始，严格按照 system prompt 中定义的输出结构生成。",
         "这是一份全新的独立报告，不是对上述参考复盘的补充或续写。",
+        "",
+        "【重要：输出要求】",
+        "你必须将完整报告直接输出到 stdout，以 '# 美股复盘 ·' 开头。",
+        "不要将报告写入文件，不要输出摘要或补充说明，必须输出完整的报告正文。",
+        "先完成完整报告输出，再做任何 WebSearch 搜索。搜索结果直接融入报告对应段落。",
         "=" * 60,
     ])
 
@@ -263,6 +274,7 @@ def generate_daily_review(zlog_text: str, ms_text: str, sector_summary: str,
         prompt,
         system_prompt=system_prompt,
         allowed_tools="WebSearch WebFetch",
+        disallowed_tools="Write Edit TodoWrite",
         max_budget=8.0,
         caller="generate_review",
         provider=provider,
